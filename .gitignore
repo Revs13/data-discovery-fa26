@@ -1,0 +1,8 @@
+cache/
+__pycache__/
+.env
+.venv/
+*.log
+output/documents.csv
+output/matches.csv
+output/query_counts.csv

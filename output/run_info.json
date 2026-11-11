@@ -1,0 +1,18 @@
+{
+  "window": [
+    "2001-01-01",
+    "2026-10-31"
+  ],
+  "queries": 2166,
+  "not_collected": 0,
+  "documents": 139792,
+  "by_priority": {
+    "1": 896,
+    "2": 3066,
+    "3": 97185,
+    "4": 38645
+  },
+  "sha256_documents_csv": "15539f3ee63bf660ecd50a3d99be74a4bd67cfeba488aecbb0cce37c4dd09658",
+  "sha256_keywords_py": "5deac0a77577b5b40faba0d6b9d88eef3baacb0089184585d714034720f32230",
+  "built_utc": "2026-11-11T06:14:21+00:00"
+}
