@@ -12,6 +12,8 @@ $env:SEC_CONTACT = "you@berkeley.edu"     # SEC requires a contact email in the 
 .\.venv\Scripts\python scraper.py count   # optional: hits per query, 1 request each (~40 min)
 .\.venv\Scripts\python scraper.py collect # fetch all results into cache/ (~3 h; rerun to resume)
 .\.venv\Scripts\python scraper.py build   # cache/ -> output/ (offline, ~1 min)
+.\.venv\Scripts\python scraper.py texts   # download the ~4,000 P1-P2 texts -> cache/text/ (~15-20 min; rerun to resume)
+.\.venv\Scripts\python scraper.py build   # rebuild: now also groups re-filed copies (adds ~1-2 min)
 .\.venv\Scripts\python -m unittest test_scraper
 ```
 
@@ -27,6 +29,7 @@ keywords.py --(2,166 queries)--> EDGAR Full-Text Search API --> cache/ (1 gz fil
 2. **Search.** `scraper.py` calls `efts.sec.gov/LATEST/search-index`, the API behind sec.gov's full-text search. It fetches every result page (100 hits per page), throttled to about 5 requests/s, with retry and backoff.
 3. **Too-broad queries get narrowed.** The API stops at 10,000 hits, so a bigger query gives incomplete results. In the first run, 30 queries hit that cap, for example `"services agreement" "artificial intelligence"`. Each now carries a third phrase, `"in witness whereof"`, the line just above the signature block of almost every signed contract. That keeps signed agreements and drops most 10-Ks and fund reports. All 30 now fit (110–5,200 hits each). Any query still over the cap would be skipped and logged.
 4. **Build.** Hits from all queries are deduplicated into one row per document. Each row gets a priority from fixed rules, and the output is sorted. This step makes no network calls.
+5. **Re-filed copies (optional, P1–P2 only).** The same contract is often filed several times: with an 8-K, again with the next 10-Q, again in an S-1 or DEFA14A. Each copy has its own accession number, so step 4 keeps them as separate rows. `texts` downloads each P1–P2 document; `build` then compares their text (lowercased words, HTML stripped, 5-word shingles). Two documents with **Jaccard similarity ≥ 0.95** are treated as the same contract. Copies score ~0.99+, since only cover lines like "EX-10.25" differ. Amendments and amended-and-restated agreements usually fall below the threshold and stay separate. The kept copy is the highest-priority one, then the **earliest filing** (usually the original 8-K). Metadata alone can't do this: grouping by company + doc type + matched queries also lumped together different exhibits from the same filing (e.g. 10 unrelated contracts in one 10-KSB).
 
 **Unit of data:** one file inside a filing, such as the main 10-K or one exhibit like `EX-10.1`. `doc_id` is `accession:filename`.
 
@@ -47,8 +50,8 @@ The terms come from the mentor's list plus extensions: MSA synonyms (SOW, order 
 
 | File | Content |
 |---|---|
-| `ai_agreements.xlsx` | Sheets: **Contracts (P1-P2)**, **Other docs (P3-P4)**, **Queries** (search log) |
-| `documents.csv` * | Same rows, plus `doc_id` |
+| `ai_agreements.xlsx` | Sheets: **Contracts (P1-P2)** (one row per contract), **Other docs (P3-P4)**, **Duplicate copies (P1-P2)** (re-filed copies left out of the first sheet, each with a link to the kept copy), **Queries** (search log) |
+| `documents.csv` * | Every row, copies included, plus `duplicate_of`, `similarity` and `doc_id` |
 | `queries.csv` | Every query: exact text, family, hits reported/collected, notes (narrowed, API duplicates) |
 | `matches.csv` * | Every document ↔ query pair (full traceability) |
 | `query_counts.csv` * | Step-1 count pass (run 1 query list) |
@@ -57,7 +60,7 @@ The terms come from the mentor's list plus extensions: MSA synonyms (SOW, order 
 
 \* Not in git (30–36 MB each). `collect` + `build` regenerate them.
 
-**Columns:** `priority`, `doc_type`, `title` (the SEC's exhibit description, often just "EX-10.1"), `company` (the filer), `form / exhibit`, `filed`, `url`, `strategy` + `query` (the best-matching query: most important family first, then lowest ID), `n_queries` (how many queries matched; higher means more AI and contract signal).
+**Columns:** `priority`, `doc_type`, `title` (the SEC's exhibit description, often just "EX-10.1"), `company` (the filer), `form / exhibit`, `filed`, `url`, `strategy` + `query` (the best-matching query: most important family first, then lowest ID), `n_queries` (how many queries matched; higher means more AI and contract signal), `copies` (how many filings of this contract were found; 1 = no other copy, or texts not downloaded). CSV only: `duplicate_of` (the `doc_id` of the kept copy, blank if this row is kept) and `similarity` (Jaccard to the kept copy).
 
 **Priority rules** (deterministic):
 
@@ -84,6 +87,7 @@ Merger exhibits are kept out of P1 because, since about 2023, nearly every merge
 
 - Fixed date window, fixed query list, deterministic dedupe/classify/sort. `build` from the same cache produces a byte-identical `documents.csv` (verified by hash).
 - In a live re-fetch of 15 random queries hours later, **15/15 returned identical results.**
+- `run_info.json` also records `p1_p2_texts_compared`, `p1_p2_duplicate_copies` and `by_priority_without_copies`. Grouping is deterministic given the same `cache/text/`.
 - To compare a rerun, check `sha256_documents_csv` and `sha256_keywords_py` in `run_info.json`. The `.xlsx` bytes differ between runs (embedded timestamp), so compare the CSV.
 - **Known limitation:** for queries with more than 100 hits, the API can shuffle equal-score documents across pages. This run saw 223 duplicate hits out of 625,991 (0.036%) in 90 queries, meaning up to 223 hits may be missing. Most of those documents are also caught by other queries. Reruns may differ at this margin.
 - Results also depend on SEC's search index. Late-indexed filings inside the window could change counts slightly.
@@ -93,7 +97,7 @@ Merger exhibits are kept out of P1 because, since about 2023, nearly every merge
 1. **No text check yet.** Relevance comes from search hits plus exhibit type. Phase 2: download the P1/P2 texts (about 2,900) and score how densely AI terms appear near contract language. That would raise precision a lot.
 2. **EDGAR's blind spots.** Private AI companies don't file. Routine contracts don't have to be filed. Pricing is redacted (`[***]`).
 3. **Titles are thin.** The search index often gives only "EX-10.1"; the real title is inside the document (another reason for phase 2).
-4. **Duplicate rows.** The same contract is often filed several times (e.g. with an 8-K and again with the 10-Q). Each copy is its own row. Phase 2 could merge copies by text fingerprint.
+4. **Duplicate rows.** Re-filed copies of a P1–P2 contract are grouped by text (see step 5). P3–P4 rows are not grouped. A contract filed by **both parties** is grouped too, since the text is the same. Groups chain: if A≈B and B≈C, all three are one group even if A and C alone score a bit lower; `similarity` shows each copy's score against the kept one, so borderline cases can be checked.
 5. **Precision is measured on P1 only** (40 + 20 rows, one reviewer). It should be repeated by a human, on P2 too.
 
 ## Glossary
